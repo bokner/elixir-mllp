@@ -182,11 +182,17 @@ defmodule ClientTest do
               "this should fail as the connection will be dropped on unexpected packet"
             )
 
-          refute Client.is_connected?(pid)
+          ## Give it some time to reconnect
+          Process.sleep(10)
         end)
 
       assert String.contains?(log, Client.format_error(:unexpected_packet_received))
       assert String.contains?(log, "Connection closed")
+      assert String.contains?(log, "Connection established")
+      ## The connection had been closed, then re-established
+      {start_closed, _} = :binary.match(log, "Connection closed")
+      {start_established, _} = :binary.match(log, "Connection established")
+      assert start_closed < start_established
     end
   end
 

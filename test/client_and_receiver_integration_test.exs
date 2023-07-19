@@ -286,7 +286,8 @@ defmodule ClientAndReceiverIntegrationTest do
         )
 
       capture_log(fn ->
-        {:error, %MLLP.Client.Error{reason: :timeout}} = MLLP.Client.send(client_pid, "MSH|NOREPLY", %{reply_timeout: 1})
+        {:error, %MLLP.Client.Error{reason: :timeout}} =
+          MLLP.Client.send(client_pid, "MSH|NOREPLY", %{reply_timeout: 1})
       end)
 
       # Wait for reconnect timer
