@@ -812,7 +812,7 @@ defmodule MLLP.Client do
   end
 
   def default_socket_opts() do
-    [send_timeout: 60_000, send_timeout_close: true]
+    [send_timeout: 60_000, send_timeout_close: true, keepalive: true]
   end
 
   def fixed_socket_opts() do

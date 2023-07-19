@@ -152,6 +152,27 @@ defmodule ClientTest do
 
       assert match?({:backoff, 1, 180, 2, :normal, _, _}, state.backoff)
     end
+
+    test "the backoff will be reset every time 'send' call fails",
+         %{client: client, port: port} = _ctx do
+      # Stop the receiver...
+      MLLP.Receiver.stop(port)
+
+      # ... and wait for backoff to change; the delay below would set next backoff timer to 4.
+      Process.sleep(3000 + 100)
+
+      {_fsm_state, state} = :sys.get_state(client)
+
+      {:backoff, 1, 180, backoff_timeout, :normal, _, _} = state.backoff
+      assert backoff_timeout == 4
+
+      {:error, _} = MLLP.Client.send(client, "no connection, this should fail")
+
+      {_fsm_state, state} = :sys.get_state(client)
+      {:backoff, 1, 180, backoff_timeout, :normal, _, _} = state.backoff
+
+      assert backoff_timeout == 2
+    end
   end
 
   describe "unexpected messages" do
