@@ -199,6 +199,8 @@ defmodule MLLP.Receiver do
 
     receiver_id = Keyword.get(opts, :ref, make_ref())
 
+    idle_timeout = Keyword.get(opts, :idle_timeout, 30_000)
+
     {transport_mod, transport_opts} =
       default_transport_opts()
       |> Map.merge(Keyword.get(opts, :transport_opts, %{}))
@@ -214,7 +216,9 @@ defmodule MLLP.Receiver do
       dispatcher_module: dispatcher_mod,
       allowed_clients: allowed_clients,
       verify: verify,
-      context: Keyword.get(opts, :context, %{})
+      context: Keyword.get(opts, :context, %{}),
+      idle_timeout: idle_timeout,
+      max_connections: Keyword.get(opts, :max_connections, 1)
     }
 
     %{
@@ -299,6 +303,8 @@ defmodule MLLP.Receiver do
     {:ok, server_info} = transport.sockname(socket)
     {:ok, client_info} = transport.peername(socket)
 
+    maybe_reject_connection(socket, receiver_id)
+
     case Peer.validate(%{transport: transport, socket: socket, client_info: client_info}, options) do
       {:ok, peer_name} ->
         :ok = transport.setopts(socket, active: :once)
@@ -313,11 +319,13 @@ defmodule MLLP.Receiver do
           Map.get(options, :context, %{})
           |> Map.put(:connection_info, connection_info)
 
+        idle_timeout = Map.get(options, :idle_timeout)
         state = %{
           socket: socket,
           server_info: server_info,
           client_info: client_info,
           transport: transport,
+          idle_timeout: idle_timeout,
           framing_context: %FramingContext{
             receiver_context: receiver_context,
             packet_framer_module: Map.get(options, :packet_framer_module),
@@ -326,7 +334,7 @@ defmodule MLLP.Receiver do
         }
 
         # http://erlang.org/doc/man/gen_server.html#enter_loop-3
-        :gen_server.enter_loop(__MODULE__, [], state)
+        :gen_server.enter_loop(__MODULE__, [], state, idle_timeout)
 
       {:error, error} ->
         Logger.warn("Failed to verify client #{inspect(client_info)}, error: #{inspect(error)}")
@@ -337,9 +345,12 @@ defmodule MLLP.Receiver do
   end
 
   def handle_info({message, socket, data}, state) when message in [:tcp, :ssl] do
-    Logger.debug(fn -> "Receiver received data: [#{inspect(data)}]." end)
+    Logger.debug(fn -> "Receiver received data: [#{inspect(data)}] on #{inspect socket}."
+
+    end)
+
     framing_context = handle_received_data(socket, data, state.framing_context, state.transport)
-    {:noreply, %{state | framing_context: framing_context}}
+    {:noreply, %{state | framing_context: framing_context}, state.idle_timeout}
   end
 
   def handle_info({message, _socket}, state) when message in [:tcp_closed, :ssl_closed] do
@@ -353,13 +364,28 @@ defmodule MLLP.Receiver do
   end
 
   def handle_info(:timeout, state) do
-    Logger.debug("Receiver timed out.")
+    Logger.debug("Receiver timed out. State: #{inspect state}")
+    :gen_tcp.shutdown(state.socket, :read)
+    #:gen_tcp.close(state.socket)
+
     {:stop, :normal, state}
   end
 
   def handle_info(msg, state) do
     Logger.warn("Unexpected handle_info for msg [#{inspect(msg)}].")
     {:noreply, state}
+  end
+
+  defp maybe_reject_connection(socket, receiver_id) do
+    receiver_info  = :ranch.info(receiver_id)
+    Logger.debug("Receiver info: #{inspect receiver_info}")
+
+    if receiver_info[:active_connections] > 1 do
+      :gen_tcp.shutdown(socket, :read_write)
+      Logger.debug("Connection rejected")
+    else
+      Logger.debug("Connection accepted")
+    end
   end
 
   defp implements_behaviour?(mod, behaviour) do
