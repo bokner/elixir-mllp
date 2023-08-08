@@ -199,7 +199,7 @@ defmodule MLLP.Receiver do
 
     receiver_id = Keyword.get(opts, :ref, make_ref())
 
-    idle_timeout = Keyword.get(opts, :idle_timeout, 30_000)
+    idle_timeout = Keyword.get(opts, :idle_timeout, :infinity)
 
     {transport_mod, transport_opts} =
       default_transport_opts()
@@ -303,7 +303,7 @@ defmodule MLLP.Receiver do
     {:ok, server_info} = transport.sockname(socket)
     {:ok, client_info} = transport.peername(socket)
 
-    maybe_reject_connection(socket, receiver_id)
+    maybe_reject_connection(socket, receiver_id, options)
 
     case Peer.validate(%{transport: transport, socket: socket, client_info: client_info}, options) do
       {:ok, peer_name} ->
@@ -353,14 +353,23 @@ defmodule MLLP.Receiver do
     {:noreply, %{state | framing_context: framing_context}, state.idle_timeout}
   end
 
-  def handle_info({message, _socket}, state) when message in [:tcp_closed, :ssl_closed] do
+  def handle_info({message, socket}, state) when message in [:tcp_closed, :ssl_closed] do
     Logger.debug("MLLP.Receiver tcp_closed.")
+    :gen_tcp.shutdown(socket, :read)
     {:stop, :normal, state}
   end
 
   def handle_info({message, _, reason}, state) when message in [:tcp_error, :tls_error] do
     Logger.error(fn -> "MLLP.Receiver encountered a tcp_error: [#{inspect(reason)}]" end)
     {:stop, reason, state}
+  end
+
+  def handle_info(:shutdown, state) do
+    Logger.debug("Shutting down...State: #{inspect state}")
+    :gen_tcp.shutdown(state.socket, :read)
+    #:gen_tcp.close(state.socket)
+
+    {:stop, :normal, state}
   end
 
   def handle_info(:timeout, state) do
@@ -376,12 +385,12 @@ defmodule MLLP.Receiver do
     {:noreply, state}
   end
 
-  defp maybe_reject_connection(socket, receiver_id) do
+  defp maybe_reject_connection(_socket, receiver_id, opts) do
     receiver_info  = :ranch.info(receiver_id)
     Logger.debug("Receiver info: #{inspect receiver_info}")
 
-    if receiver_info[:active_connections] > 1 do
-      :gen_tcp.shutdown(socket, :read_write)
+    if receiver_info[:active_connections] > opts.max_connections do
+      Process.send_after(self(), :shutdown, 500)
       Logger.debug("Connection rejected")
     else
       Logger.debug("Connection accepted")
